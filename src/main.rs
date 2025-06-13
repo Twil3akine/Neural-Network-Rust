@@ -1,3 +1,8 @@
+mod utils;
+
+use utils::*;
+
 fn main() {
-    println!("Hello, world!");
+    println!("{}", relu(-1));
+    println!("{}", relu(1));
 }
