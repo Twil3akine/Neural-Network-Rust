@@ -1,91 +1,132 @@
+#![allow(unused_imports)]
+
 mod utils;
+
+use rand::random;
 use utils::*;
+use image::{ImageReader};
+use std::fs;
+use rand::Rng;
+use rand::seq::{SliceRandom, IndexedRandom};
+
+const WIDTH: usize = 15;
+const HEIGHT: usize = 15;
+const IMAGE_SIZE: usize = WIDTH * HEIGHT;
+
+fn load_dataset(dir: &str) -> Vec<(Vec<f64>, usize)> {
+    let mut data = Vec::new();
+    let entries = fs::read_dir(dir).expect("Designed directory is not exist.");
+
+    for entry in entries {
+        let entry = entry.expect("Reading file is failed.");
+        let path = entry.path();
+
+        if !path.is_file() { continue; }
+
+        let label = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.split('-').next())
+            .and_then(|s| s.parse::<usize>().ok())
+            .expect("File name is not included label.");
+        
+        let img = ImageReader::open(&path)
+            .expect("Reading image is failed.")
+            .decode()
+            .expect("Decoding is failed.")
+            .to_luma8();
+
+        let data_vec = img
+            .pixels()
+            .map(|p| p[0] as f64 / 255.0)
+            .collect::<Vec<f64>>();
+
+        assert_eq!(data_vec.len(), IMAGE_SIZE);
+        data.push((data_vec, label - 1));
+    }
+
+    data
+}
+
+
 
 fn main() {
-    let ceil: usize = 9;
+    println!();
 
-    // モデルの構成: 入力2次元 -> 隠れ8ユニット -> 出力クラス数(2*ceil-1)
-    let class_count = 2 * ceil - 1;
-    let mut model: Model = Model::new(&[2, 32, 16, class_count], Loss::CrossEntropyError);
-
-    let mut train_data: Vec<(Vec<f64>, Vec<f64>, usize)> = Vec::new();
-    for x in 1..=ceil {
-        for y in 1..=ceil {
-            // 正解ラベル sum: 0 ..= 2*ceil-2
-            let sum: usize = x + y - 2;
-
-            if sum == (ceil*2 - 2) / 2 && x != 1 { continue; }
-
-            let x01 = (x as f64 - 1.0) / ((ceil - 1) as f64); // [0,1]
-            let y01 = (y as f64 - 1.0) / ((ceil - 1) as f64); // [0,1]
-
-            let inp: Vec<f64> = vec![x01, y01];
-
-            // ターゲット one-hot ベクトル長 class_count
-            let mut target: Vec<f64> = vec![0.0; class_count];
-            target[sum] = 1.0;
-
-            train_data.push((inp, target, sum));
-        }
+    let all_data = load_dataset("../images");
+    let kind: usize = 5;
+    let size_by_kind: usize = 5;
+    let mut rng = rand::rng();
+    
+    let mut data_by_class = vec![Vec::new(); kind];
+    for (input, label) in all_data {
+        data_by_class[label].push((input, label));
     }
 
+    // 学習データと検証データに分割
+    let mut train_data = Vec::new();
+    let mut test_data = Vec::new();
+    for class_data in data_by_class {
+        let (train, test): (Vec<_>, Vec<_>) = class_data
+            .choose_multiple(&mut rng, size_by_kind)
+            .cloned()
+            .enumerate()
+            .partition(|(i, _)| *i < (size_by_kind as f64 * 0.6) as usize);
+        train_data.extend(train.into_iter().map(|(_, d)| d));
+        test_data.extend(test.into_iter().map(|(_, d)| d));
+    }
 
-    // 学習パラメータ
-    let epochs: usize = 2500;
-    let mut lr: f64 = 0.01;
+    // 学習
+    let mut model = Model::new(&[IMAGE_SIZE, 32, 16, kind], Loss::CrossEntropyError);
 
-    // 学習ループ
-    for epoch in 0..100 * epochs {
+    let epoch_size = 500;
+    let mut lr = 0.01;
+
+    for epoch in 0..100*epoch_size {
         let loss: f64 = train_data
             .iter()
-            .map(|(input, target, _sum)| model.train(input, target, lr))
+            .map(|(input, label)| {
+                let mut target = vec![0.0; kind];
+                target[*label] = 1.0;
+                model.train(input, &target, lr)
+            })
             .sum::<f64>();
 
-        if epoch % epochs == 0 {
-            println!("Epoch {:02}: loss = {:.3}", epoch / epochs + 1, loss / train_data.len() as f64);
-            if (epoch / epochs) % 10 == 0 {
-                lr *= 0.90;
-            }
+        if epoch % epoch_size == 0 {
+            println!("Epoch {:02}: Loss = {:.7}", epoch / epoch_size + 1, loss / train_data.len() as f64);
+
+            if (epoch / epoch_size) / 10 == 0 { lr *= 0.90; }
         }
     }
 
-    // 結果表示
-    println!("Result:");
-    let mut confusion: Vec<Vec<usize>> = vec![vec![0usize; class_count]; class_count];
-    for x in 1..=ceil {
-        for y in 1..=ceil {
-            let sum: usize = x + y - 2;
-            let x01 = (x as f64 - 1.0) / ((ceil - 1) as f64);
-            let y01 = (y as f64 - 1.0) / ((ceil - 1) as f64);
-            let inp = vec![x01, y01];
+    // 評価
+    println!("\nResult:");
+    let mut confusion = vec![vec![0usize; kind]; kind];
+    for (input, label) in &test_data {
+        let output = model.forward(input);
+        let (pred, _confidence) = output
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap();
 
-            let output = model.forward(&inp);
-            let (pred, _) = output
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .unwrap();
-
-            confusion[sum][pred] += 1;
-        }
+        confusion[*label][pred] += 1;
     }
 
-    // 混同行列表示
+    println!("\nConfusion Matrix");
     print!("    ");
-    for i in 0..class_count {
-        print!("{:^4}", i);
-    }
+
+    for j in 0..kind { print!("{:^4}", j+1); }
     println!();
-    for i in 0..class_count {
-        print!("{:^4}", i);
-        for j in 0..class_count {
-            if confusion[i][j] == 0 {
-                print!("{:^4}", confusion[i][j]);
+    for (i, row) in confusion.iter().enumerate() {
+        print!("{:^4}", i+1);
+        for &v in row {
+            if v > 0 {
+                print!("\x1b[036m{:^4}\x1b[0m", v);
             } else {
-                print!("\x1b[36m{:^4}\x1b[037m", confusion[i][j]);
+                print!("{:^4}", v);
             }
         }
         println!();
     }
 }
-
