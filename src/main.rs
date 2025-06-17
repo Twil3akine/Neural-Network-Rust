@@ -2,11 +2,12 @@
 
 mod utils;
 
-use rand::random;
 use utils::*;
 use image::{ImageReader};
 use std::fs;
+use std::time::Instant;
 use rand::Rng;
+use rand::random;
 use rand::seq::{SliceRandom, IndexedRandom};
 
 const WIDTH: usize = 15;
@@ -51,11 +52,10 @@ fn load_dataset(dir: &str) -> Vec<(Vec<f64>, usize)> {
 
 
 fn main() {
-    println!();
-
     let all_data = load_dataset("../images");
     let kind: usize = 5;
-    let size_by_kind: usize = 5;
+    let size_by_kind: usize = 40;
+    let test_data_ratio: f64 = 0.8;
     let mut rng = rand::rng();
     
     let mut data_by_class = vec![Vec::new(); kind];
@@ -71,18 +71,20 @@ fn main() {
             .choose_multiple(&mut rng, size_by_kind)
             .cloned()
             .enumerate()
-            .partition(|(i, _)| *i < (size_by_kind as f64 * 0.6) as usize);
+            .partition(|(i, _)| *i < (size_by_kind as f64 * test_data_ratio) as usize);
         train_data.extend(train.into_iter().map(|(_, d)| d));
         test_data.extend(test.into_iter().map(|(_, d)| d));
     }
 
     // 学習
-    let mut model = Model::new(&[IMAGE_SIZE, 32, 16, kind], Loss::CrossEntropyError);
+    let mut model = Model::new(&[IMAGE_SIZE, 32, kind], Loss::CrossEntropyError);
 
-    let epoch_size = 500;
+    let epoch_size = 100;
     let mut lr = 0.01;
 
-    for epoch in 0..100*epoch_size {
+    let start_time: Instant = Instant::now();
+
+    for epoch in 1..=epoch_size*100 {
         let loss: f64 = train_data
             .iter()
             .map(|(input, label)| {
@@ -93,7 +95,19 @@ fn main() {
             .sum::<f64>();
 
         if epoch % epoch_size == 0 {
-            println!("Epoch {:02}: Loss = {:.7}", epoch / epoch_size + 1, loss / train_data.len() as f64);
+            let current_epoch: usize = epoch / epoch_size;
+            let elapsed: f64 = start_time.elapsed().as_secs_f64();
+            let avg_time_per_epoch: f64 = elapsed / current_epoch as f64;
+            let remain_epochs: usize = 100 - current_epoch;
+            let eta: f64 = avg_time_per_epoch * remain_epochs as f64;
+
+            println!(
+                "Epoch {:02}: Loss = {:.7} | Elapsed: {:.2}s | ETA: {:.2}s",
+                current_epoch,
+                loss / train_data.len() as f64,
+                elapsed,
+                eta,
+            );
 
             if (epoch / epoch_size) / 10 == 0 { lr *= 0.90; }
         }
